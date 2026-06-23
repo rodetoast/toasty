@@ -78,6 +78,11 @@ DEFAULT_DICTIONARY = [
     "Menu", "Button", "Text", "Font", "Label", "Title", "Window", "Panel", "Tab", "Slot",
     "Level", "Stage", "Room", "Area", "Zone", "Map", "World", "Quest", "Task", "Mission"
 ]
+DEFAULT_TYPO_CORRECTIONS = {
+    "attck": "Attack",
+    "recovry": "Recovery",
+    "chanelling": "Channeling",
+}
 
 def load_dictionary():
     if os.path.exists(DICT_FILE_PATH):
@@ -85,10 +90,10 @@ def load_dictionary():
             with open(DICT_FILE_PATH, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    return normalize_words(data)
+                    return normalize_words(DEFAULT_DICTIONARY + data)
         except Exception as e:
             write_error_log("Failed to load custom dictionary; using defaults.", e)
-    return DEFAULT_DICTIONARY.copy()
+    return normalize_words(DEFAULT_DICTIONARY)
 
 def save_dictionary(words_list):
     normalized_words = normalize_words(words_list)
@@ -169,7 +174,7 @@ def describe_subprocess_failure(cmd, result, file_path=None):
     ]
     return "\n".join(lines)
 
-def correct_spelling(word, custom_dict, threshold=85):
+def correct_spelling(word, custom_dict, threshold=85, margin=8):
     if len(word) <= 2:
         return word.capitalize(), False
         
@@ -179,16 +184,28 @@ def correct_spelling(word, custom_dict, threshold=85):
     if word_lower in dict_lower:
         return dict_lower[word_lower], False
 
+    typo_target = DEFAULT_TYPO_CORRECTIONS.get(word_lower)
+    if typo_target:
+        typo_lower = typo_target.lower()
+        if typo_lower in dict_lower:
+            return dict_lower[typo_lower], True
+
     choices = list(dict_lower.keys())
-    # thefuzz scorer 변경: 일반 ratio 대신 token_sort_ratio나 단순히 threshold 값을 높임.
-    # 길이가 짧은 단어(예: Die, Turn)의 경우 ratio가 비정상적으로 높게 나올 수 있으므로 threshold를 85로 상향 조정
-    best_match = process.extractOne(word_lower, choices, scorer=fuzz.ratio)
+    matches = process.extract(word_lower, choices, scorer=fuzz.ratio, limit=2)
     
-    # 추가 검증: 두 단어의 길이 차이가 2 이상 나면 아예 다른 단어일 확률이 높으므로 교정하지 않음 (예: Die(3) vs Dive(4)는 길이차이 1이라 통과할 수 있지만, Return(6) vs Turn(4)은 길이차이 2)
-    if best_match and best_match[1] >= threshold:
+    if matches and matches[0][1] >= threshold:
+        best_match = matches[0]
         corrected_lower = best_match[0]
+        second_score = matches[1][1] if len(matches) > 1 else 0
+
+        if word_lower[0] != corrected_lower[0]:
+            return word.capitalize(), False
+        if corrected_lower.endswith(word_lower) and corrected_lower != word_lower:
+            return word.capitalize(), False
         if abs(len(word_lower) - len(corrected_lower)) > 1:
-             return word.capitalize(), False
+            return word.capitalize(), False
+        if best_match[1] - second_score < margin:
+            return word.capitalize(), False
         
         corrected_word = dict_lower[corrected_lower]
         return corrected_word, True

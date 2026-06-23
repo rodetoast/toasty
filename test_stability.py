@@ -59,9 +59,49 @@ def test_normalize_words():
 def test_formatting_examples():
     custom_dict = main.DEFAULT_DICTIONARY.copy()
     assert_equal(main.format_tag_name("chase_attck_End", custom_dict), ("Chase_Attack_End", False, True), "spell correction")
+    assert_equal(main.format_tag_name("attck", custom_dict), ("Attack", False, True), "explicit typo correction")
     assert_equal(main.format_tag_name("powerwave", custom_dict), ("PowerWave", False, False), "wordninja compound")
     assert_equal(main.format_tag_name("Idle_(Loop)", custom_dict), ("Idle_(Loop)", True, False), "underscore loop")
     assert_equal(main.format_tag_name("Idle(Loop)", custom_dict), ("Idle_(Loop)", True, False), "inline loop")
+
+
+def test_wing_is_not_corrected_to_swing():
+    custom_dict = main.DEFAULT_DICTIONARY.copy()
+    assert_equal(main.format_tag_name("Wing", custom_dict), ("Wing", False, False), "Wing exact")
+    assert_equal(main.format_tag_name("wing", custom_dict), ("Wing", False, False), "wing exact")
+    assert_equal(main.format_tag_name("Swing", custom_dict), ("Swing", False, False), "Swing exact")
+    assert_equal(main.format_tag_name("swing", custom_dict), ("Swing", False, False), "swing exact")
+
+
+def test_custom_dictionary_extends_defaults():
+    old_dict_path = main.DICT_FILE_PATH
+    old_log_path = main.LOG_FILE_PATH
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        main.DICT_FILE_PATH = os.path.join(temp_dir, "custom_dictionary.json")
+        main.LOG_FILE_PATH = os.path.join(temp_dir, "test_error.log")
+        with open(main.DICT_FILE_PATH, "w", encoding="utf-8") as f:
+            f.write('["CustomOnlyWord", "attack"]')
+
+        loaded = main.load_dictionary()
+        loaded_lower = {word.lower(): word for word in loaded}
+        assert "wing" in loaded_lower
+        assert "customonlyword" in loaded_lower
+        assert_equal(loaded_lower["attack"], "Attack", "default casing wins")
+
+    main.DICT_FILE_PATH = old_dict_path
+    main.LOG_FILE_PATH = old_log_path
+
+
+def test_conservative_fuzzy_guards():
+    corrected, was_corrected = main.correct_spelling("wing", ["Swing"])
+    assert_equal((corrected, was_corrected), ("Wing", False), "first-letter and prefix guard")
+
+    corrected, was_corrected = main.correct_spelling("ring", ["Bring"])
+    assert_equal((corrected, was_corrected), ("Ring", False), "suffix guard")
+
+    corrected, was_corrected = main.correct_spelling("attck", main.DEFAULT_DICTIONARY)
+    assert_equal((corrected, was_corrected), ("Attack", True), "explicit typo survives guards")
 
 
 def test_collision_report_entry_defaults_off():
@@ -127,6 +167,9 @@ if __name__ == "__main__":
     test_dictionary_and_settings_fallback()
     test_normalize_words()
     test_formatting_examples()
+    test_wing_is_not_corrected_to_swing()
+    test_custom_dictionary_extends_defaults()
+    test_conservative_fuzzy_guards()
     test_collision_report_entry_defaults_off()
     test_apply_time_collision_detection_blocks_save()
     test_normal_modification_has_no_collision()
