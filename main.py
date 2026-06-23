@@ -5,6 +5,8 @@ import json
 import re
 import subprocess
 import tempfile
+import traceback
+from datetime import datetime
 import wordninja
 from thefuzz import process, fuzz
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout, 
@@ -16,7 +18,16 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 
 # --- Global Dictionary Configuration ---
-DICT_FILE_PATH = "custom_dictionary.json"
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DICT_FILE_PATH = os.path.join(APP_DIR, "custom_dictionary.json")
+SETTINGS_FILE_PATH = os.path.join(APP_DIR, "settings.json")
+LOG_FILE_PATH = os.path.join(APP_DIR, "aseprite_tag_master_error.log")
+DEFAULT_ASEPRITE_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Aseprite\aseprite.exe"
+ASEPRITE_TIMEOUT_SECONDS = 60
+COLLISION_ISSUE = "이름 충돌 위험"
 DEFAULT_DICTIONARY = [
     # 기존 추출된 핵심 단어들
     "Attack", "Ready", "Groggy", "End", "(Loop)", "Channeling", "Break", "Idle", "Walk", "Run", 
@@ -72,14 +83,91 @@ def load_dictionary():
     if os.path.exists(DICT_FILE_PATH):
         try:
             with open(DICT_FILE_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            pass
+                data = json.load(f)
+                if isinstance(data, list):
+                    return normalize_words(data)
+        except Exception as e:
+            write_error_log("Failed to load custom dictionary; using defaults.", e)
     return DEFAULT_DICTIONARY.copy()
 
 def save_dictionary(words_list):
+    normalized_words = normalize_words(words_list)
     with open(DICT_FILE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(words_list, f, indent=4, ensure_ascii=False)
+        json.dump(normalized_words, f, indent=4, ensure_ascii=False)
+
+def normalize_words(words_list):
+    normalized = []
+    seen = set()
+    for word in words_list:
+        clean_word = str(word).strip()
+        if not clean_word:
+            continue
+        key = clean_word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(clean_word)
+    return normalized
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE_PATH):
+        try:
+            with open(SETTINGS_FILE_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            write_error_log("Failed to load settings.", e)
+    return {}
+
+def save_settings(settings):
+    with open(SETTINGS_FILE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(settings, f, indent=4, ensure_ascii=False)
+
+def write_error_log(message, exc=None):
+    try:
+        with open(LOG_FILE_PATH, 'a', encoding='utf-8') as f:
+            f.write(f"\n=== {message} ===\n")
+            if exc is not None:
+                f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except Exception:
+        pass
+
+def lua_quote(value):
+    return json.dumps(str(value), ensure_ascii=False)
+
+def lua_path_quote(path):
+    return lua_quote(str(path).replace("\\", "/"))
+
+def run_aseprite_command(cmd, file_path=None, timeout=ASEPRITE_TIMEOUT_SECONDS):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        lines = [
+            "Aseprite command timed out.",
+            f"File: {file_path or '(none)'}",
+            f"Timeout: {timeout} seconds",
+            "Command:",
+            " ".join(f'"{part}"' if " " in str(part) else str(part) for part in cmd),
+            "stdout:",
+            (e.stdout or "").strip() or "(empty)",
+            "stderr:",
+            (e.stderr or "").strip() or "(empty)",
+        ]
+        raise Exception("\n".join(lines)) from e
+
+def describe_subprocess_failure(cmd, result, file_path=None):
+    lines = [
+        "Aseprite command failed.",
+        f"File: {file_path or '(none)'}",
+        f"Return code: {result.returncode}",
+        "Command:",
+        " ".join(f'"{part}"' if " " in str(part) else str(part) for part in cmd),
+        "stdout:",
+        result.stdout.strip() or "(empty)",
+        "stderr:",
+        result.stderr.strip() or "(empty)",
+    ]
+    return "\n".join(lines)
 
 def correct_spelling(word, custom_dict, threshold=85):
     if len(word) <= 2:
@@ -179,6 +267,7 @@ class AnalysisThread(QThread):
                 tags = self.get_tags_from_file(file_path)
                 results[file_path] = tags
             except Exception as e:
+                write_error_log(f"Error reading {file_path}", e)
                 self.error_signal.emit(f"Error reading {os.path.basename(file_path)}: {str(e)}")
         self.result_signal.emit(results)
 
@@ -186,14 +275,22 @@ class AnalysisThread(QThread):
         json_fd, json_path = tempfile.mkstemp(suffix=".json")
         os.close(json_fd)
         
-        lua_script = f"""
+        lua_script = r"""
 local sprite = app.sprite
 if not sprite then return end
 local file = io.open(app.params["out_json"], "w")
+local function json_escape(value)
+    value = string.gsub(value, "\\", "\\\\")
+    value = string.gsub(value, '"', '\\"')
+    value = string.gsub(value, "\n", "\\n")
+    value = string.gsub(value, "\r", "\\r")
+    value = string.gsub(value, "\t", "\\t")
+    return value
+end
 file:write("[")
 for i, tag in ipairs(sprite.tags) do
-    local name = string.gsub(tag.name, '"', '\\\\"')
-    file:write('{{"name":"' .. name .. '", "repeats":' .. tostring(tag.repeats) .. '}}')
+    local name = json_escape(tag.name)
+    file:write('{"name":"' .. name .. '", "repeats":' .. tostring(tag.repeats) .. '}')
     if i < #sprite.tags then file:write(",") end
 end
 file:write("]")
@@ -209,19 +306,21 @@ file:close()
             "--script", lua_path
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            os.remove(json_path)
-            os.remove(lua_path)
-            raise Exception("Failed to read tags.")
+        try:
+            result = run_aseprite_command(cmd, file_path)
+            if result.returncode != 0:
+                raise Exception(describe_subprocess_failure(cmd, result, file_path))
 
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = f.read()
-            tags = json.loads(data) if data else []
-
-        os.remove(json_path)
-        os.remove(lua_path)
-        return tags
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = f.read()
+                tags = json.loads(data) if data else []
+            return tags
+        finally:
+            for temp_path in (json_path, lua_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
 class ApplyThread(QThread):
     log_signal = pyqtSignal(str)
@@ -240,10 +339,21 @@ class ApplyThread(QThread):
             try:
                 self.apply_to_file(file_path, mods)
             except Exception as e:
+                write_error_log(f"Error modifying {file_path}", e)
                 self.error_signal.emit(f"Error modifying {os.path.basename(file_path)}: {str(e)}")
         self.finished_signal.emit()
 
     def apply_to_file(self, file_path, mods):
+        if not os.path.exists(file_path):
+            raise Exception(f"원본 파일을 찾을 수 없습니다: {file_path}")
+        if not os.path.isfile(file_path):
+            raise Exception(f"파일이 아닙니다: {file_path}")
+        before_size = os.path.getsize(file_path)
+        if before_size <= 0:
+            raise Exception(f"원본 파일 크기가 0입니다. 저장을 중단합니다: {file_path}")
+        if not os.access(file_path, os.W_OK):
+            raise Exception(f"원본 파일에 쓰기 권한이 없습니다: {file_path}")
+
         # 1. 자동 백업 로직 추가
         try:
             dir_name = os.path.dirname(file_path)
@@ -257,14 +367,20 @@ class ApplyThread(QThread):
             if os.name == 'nt':
                 subprocess.run(['attrib', '+h', backup_dir], capture_output=True)
                 
-            backup_path = os.path.join(backup_dir, base_name)
-            
-            # 덮어쓰기 전에 기존에 백업된 파일이 있다면 이름에 숫자를 붙여서 보존할 수도 있지만, 
-            # 여기서는 최신 수정 직전 원본을 유지하기 위해 덮어쓰거나 단순 복사합니다.
+            stem, ext = os.path.splitext(base_name)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(backup_dir, f"{stem}_{timestamp}{ext}")
+            counter = 1
+            while os.path.exists(backup_path):
+                backup_path = os.path.join(backup_dir, f"{stem}_{timestamp}_{counter:02d}{ext}")
+                counter += 1
+
             shutil.copy2(file_path, backup_path)
-            self.log_signal.emit(f"🔒 백업 완료: .aseprite_backup/{base_name}")
+            if not os.path.exists(backup_path) or os.path.getsize(backup_path) != before_size:
+                raise Exception("백업 파일 검증에 실패했습니다.")
+            self.log_signal.emit(f"백업 완료: .aseprite_backup/{os.path.basename(backup_path)}")
         except Exception as e:
-            self.log_signal.emit(f"⚠️ 백업 실패 (수정은 계속 진행됨): {str(e)}")
+            raise Exception(f"백업 실패로 저장을 중단합니다: {str(e)}") from e
 
         # 2. 기존 Lua 스크립트 실행 로직
         lua_script = """
@@ -282,24 +398,40 @@ local function set_tag(old_name, new_name, set_repeat)
 end
 """
         for old_name, new_name, set_repeat in mods:
-            escaped_old = old_name.replace('"', '\\"')
-            escaped_new = new_name.replace('"', '\\"')
             set_repeat_str = "true" if set_repeat else "false"
-            lua_script += f'\nset_tag("{escaped_old}", "{escaped_new}", {set_repeat_str})'
+            lua_script += f'\nset_tag({lua_quote(old_name)}, {lua_quote(new_name)}, {set_repeat_str})'
             self.log_signal.emit(f"[{os.path.basename(file_path)}] {old_name} => {new_name}")
 
-        lua_script += f'\nsprite:saveAs("{file_path.replace(chr(92), "/")}")\n'
+        lua_script += f'\nsprite:saveAs({lua_path_quote(file_path)})\n'
 
         lua_fd, lua_path = tempfile.mkstemp(suffix=".lua")
         with os.fdopen(lua_fd, 'w', encoding='utf-8') as f:
             f.write(lua_script)
 
         cmd = [self.aseprite_path, "-b", file_path, "--script", lua_path]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        os.remove(lua_path)
-        
-        if result.returncode != 0:
-            raise Exception("Failed to save.")
+        try:
+            result = run_aseprite_command(cmd, file_path)
+            if result.returncode != 0:
+                raise Exception(describe_subprocess_failure(cmd, result, file_path))
+            after_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            if after_size <= 0:
+                raise Exception("저장 후 파일이 없거나 크기가 0입니다.")
+            self.verify_saved_tags(file_path, mods)
+        finally:
+            try:
+                os.remove(lua_path)
+            except OSError:
+                pass
+
+    def verify_saved_tags(self, file_path, mods):
+        tags = AnalysisThread([], self.aseprite_path).get_tags_from_file(file_path)
+        for _, new_name, set_repeat in mods:
+            matches = [tag for tag in tags if tag.get('name') == new_name]
+            if not matches:
+                raise Exception(f"저장 후 검증 실패: 태그를 찾을 수 없습니다: {new_name}")
+            if set_repeat and not any(tag.get('repeats') == 1 for tag in matches):
+                raise Exception(f"저장 후 검증 실패: Repeat=1이 반영되지 않았습니다: {new_name}")
+        self.log_signal.emit(f"저장 후 검증 완료: {os.path.basename(file_path)}")
 
 class DictEditorDialog(QDialog):
     def __init__(self, parent, current_dict):
@@ -330,6 +462,98 @@ class DictEditorDialog(QDialog):
         new_words = [word.strip() for word in text.split('\n') if word.strip()]
         self.current_dict = list(dict.fromkeys(new_words))
         self.accept()
+
+def build_report_entries(analysis_data, custom_dict, replace_pairs=None):
+    replace_pairs = replace_pairs or []
+    entries = []
+
+    for file_path, tags in analysis_data.items():
+        file_entries = []
+        final_names = []
+
+        for tag in tags:
+            original_name = tag['name']
+            intermediate_name = original_name
+            for f_str, r_str in replace_pairs:
+                intermediate_name = intermediate_name.replace(f_str, r_str)
+
+            new_name, is_loop, spelling_corrected = format_tag_name(intermediate_name, custom_dict)
+            set_repeat = is_loop and tag.get('repeats') != 1
+            final_name = new_name if (original_name != new_name or set_repeat) else original_name
+            final_names.append(final_name)
+
+            issues = []
+            if original_name != intermediate_name:
+                issues.append("일괄 단어 치환")
+            if spelling_corrected:
+                issues.append("스펠링 교정")
+            elif intermediate_name != new_name:
+                issues.append("네이밍 규칙 위반")
+            if set_repeat:
+                issues.append("Loop 속성(Repeat) 누락")
+
+            file_entries.append({
+                'file_path': file_path,
+                'old_name': original_name,
+                'new_name': new_name,
+                'set_repeat': set_repeat,
+                'issues': issues,
+                'checked': True,
+            })
+
+        duplicate_names = {
+            name for name in final_names
+            if name and final_names.count(name) > 1
+        }
+
+        for entry in file_entries:
+            if entry['new_name'] in duplicate_names and entry['old_name'] != entry['new_name']:
+                entry['issues'].append(COLLISION_ISSUE)
+                entry['checked'] = False
+            if entry['issues']:
+                entries.append(entry)
+
+    return entries
+
+def detect_modification_collisions(analysis_data, file_modifications):
+    collisions = []
+
+    for file_path, mods in file_modifications.items():
+        tags = analysis_data.get(file_path, [])
+        selected_by_old_name = {}
+        for old_name, new_name, _ in mods:
+            selected_by_old_name[old_name] = new_name
+
+        final_name_sources = {}
+        changed_old_names = set(selected_by_old_name.keys())
+
+        for tag in tags:
+            original_name = tag['name']
+            final_name = selected_by_old_name.get(original_name, original_name)
+            final_name_sources.setdefault(final_name, []).append(original_name)
+
+        for final_name, old_names in final_name_sources.items():
+            unique_old_names = list(dict.fromkeys(old_names))
+            if len(old_names) > 1 and any(old_name in changed_old_names for old_name in old_names):
+                collisions.append({
+                    'file_path': file_path,
+                    'new_name': final_name,
+                    'old_names': unique_old_names,
+                })
+
+    return collisions
+
+def format_collision_message(collisions, max_items=10):
+    lines = ["같은 파일 안에 중복 태그명이 생길 수 있어 저장을 시작하지 않았습니다.", ""]
+    for collision in collisions[:max_items]:
+        lines.append(f"파일: {os.path.basename(collision['file_path'])}")
+        lines.append(f"충돌 결과 태그명: {collision['new_name']}")
+        lines.append(f"관련 original tag: {', '.join(collision['old_names'])}")
+        lines.append("")
+    if len(collisions) > max_items:
+        lines.append(f"...외 {len(collisions) - max_items}개 충돌")
+    lines.append("충돌 항목을 체크 해제하거나 이름 규칙/치환 규칙을 조정한 뒤 다시 시도하세요.")
+    return "\n".join(lines)
 
 class ReportDialog(QDialog):
     def __init__(self, parent, analysis_data, custom_dict, replace_pairs=None):
@@ -382,68 +606,48 @@ class ReportDialog(QDialog):
 
     def populate_table(self):
         row_idx = 0
-        for file_path, tags in self.analysis_data.items():
-            for tag in tags:
-                original_name = tag['name']
-                
-                # Apply all Find & Replace pairs in sequence
-                intermediate_name = original_name
-                for f_str, r_str in self.replace_pairs:
-                    intermediate_name = intermediate_name.replace(f_str, r_str)
-                
-                new_name, is_loop, spelling_corrected = format_tag_name(intermediate_name, self.custom_dict)
-                set_repeat = is_loop and tag.get('repeats') != 1
+        for entry in build_report_entries(self.analysis_data, self.custom_dict, self.replace_pairs):
+            self.table.insertRow(row_idx)
 
-                issues = []
-                if original_name != intermediate_name:
-                    issues.append("일괄 단어 치환")
-                    self.issue_types_found.add("일괄 단어 치환")
-                if spelling_corrected:
-                    issues.append("스펠링 교정")
-                    self.issue_types_found.add("스펠링 교정")
-                elif intermediate_name != new_name:
-                    issues.append("네이밍 규칙 위반")
-                    self.issue_types_found.add("네이밍 규칙 위반")
-                
-                if set_repeat:
-                    issues.append("Loop 속성(Repeat) 누락")
-                    self.issue_types_found.add("Loop 속성(Repeat) 누락")
+            chk_widget = QWidget()
+            chk_layout = QHBoxLayout(chk_widget)
+            chk_box = QCheckBox()
+            chk_box.setChecked(entry['checked'])
+            is_collision = COLLISION_ISSUE in entry['issues']
+            if is_collision:
+                chk_box.setEnabled(False)
+                chk_box.setToolTip("이름 충돌 위험 항목은 안전을 위해 적용할 수 없습니다.")
+            chk_layout.addWidget(chk_box)
+            chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chk_layout.setContentsMargins(0,0,0,0)
+            self.table.setCellWidget(row_idx, 0, chk_widget)
 
-                if issues:
-                    self.table.insertRow(row_idx)
-                    
-                    chk_widget = QWidget()
-                    chk_layout = QHBoxLayout(chk_widget)
-                    chk_box = QCheckBox()
-                    chk_box.setChecked(True)
-                    chk_layout.addWidget(chk_box)
-                    chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    chk_layout.setContentsMargins(0,0,0,0)
-                    self.table.setCellWidget(row_idx, 0, chk_widget)
-                    
-                    issue_text = ", ".join(issues)
-                    
-                    self.checkboxes.append({
-                        'checkbox': chk_box,
-                        'file_path': file_path,
-                        'old_name': original_name,
-                        'new_name': new_name,
-                        'set_repeat': set_repeat,
-                        'issues': issue_text
-                    })
-                    
-                    self.table.setItem(row_idx, 1, QTableWidgetItem(os.path.basename(file_path)))
-                    self.table.setItem(row_idx, 2, QTableWidgetItem(original_name))
-                    
-                    new_item = QTableWidgetItem(new_name)
-                    new_item.setForeground(QColor("#66b2ff"))
-                    self.table.setItem(row_idx, 3, new_item)
-                    
-                    issue_item = QTableWidgetItem(issue_text)
-                    issue_item.setForeground(QColor("#ff6b6b"))
-                    self.table.setItem(row_idx, 4, issue_item)
-                    
-                    row_idx += 1
+            issue_text = ", ".join(entry['issues'])
+            for issue in entry['issues']:
+                self.issue_types_found.add(issue)
+
+            self.checkboxes.append({
+                'checkbox': chk_box,
+                'file_path': entry['file_path'],
+                'old_name': entry['old_name'],
+                'new_name': entry['new_name'],
+                'set_repeat': entry['set_repeat'],
+                'issues': issue_text,
+                'is_collision': is_collision
+            })
+
+            self.table.setItem(row_idx, 1, QTableWidgetItem(os.path.basename(entry['file_path'])))
+            self.table.setItem(row_idx, 2, QTableWidgetItem(entry['old_name']))
+
+            new_item = QTableWidgetItem(entry['new_name'])
+            new_item.setForeground(QColor("#66b2ff"))
+            self.table.setItem(row_idx, 3, new_item)
+
+            issue_item = QTableWidgetItem(issue_text)
+            issue_item.setForeground(QColor("#ff6b6b"))
+            self.table.setItem(row_idx, 4, issue_item)
+
+            row_idx += 1
 
     def create_filter_checkboxes(self):
         self.chk_all = QCheckBox("전체 선택/해제 (Select All)")
@@ -470,15 +674,21 @@ class ReportDialog(QDialog):
             chk.blockSignals(False)
             
         for item in self.checkboxes:
-            item['checkbox'].setChecked(is_checked)
+            if item.get('is_collision'):
+                item['checkbox'].setChecked(False)
+            else:
+                item['checkbox'].setChecked(is_checked)
 
     def toggle_by_issue(self, issue_type, state):
         is_checked = state == Qt.CheckState.Checked.value
         for item in self.checkboxes:
-            if issue_type in item['issues']:
+            if item.get('is_collision'):
+                item['checkbox'].setChecked(False)
+            elif issue_type in item['issues']:
                 item['checkbox'].setChecked(is_checked)
 
     def confirm_and_accept(self):
+        self.modifications_to_apply = {}
         for item in self.checkboxes:
             if item['checkbox'].isChecked():
                 path = item['file_path']
@@ -490,10 +700,24 @@ class ReportDialog(QDialog):
             QMessageBox.information(self, "알림", "선택된 항목이 없습니다.")
             self.reject()
             return
-            
+
+        collisions = detect_modification_collisions(self.analysis_data, self.modifications_to_apply)
+        if collisions:
+            QMessageBox.critical(self, "이름 충돌 위험", format_collision_message(collisions))
+            self.modifications_to_apply = {}
+            return
+
+        file_count = len(self.modifications_to_apply)
+        tag_count = sum(len(mods) for mods in self.modifications_to_apply.values())
         reply = QMessageBox.question(
             self, "저장 확인", 
-            "선택한 변경사항을 원본 파일에 덮어씌워 저장하시겠습니까?\n이 작업은 되돌릴 수 없습니다.",
+            (
+                "백업을 만든 뒤 선택한 변경사항을 원본 파일에 저장합니다.\n"
+                f"대상 파일 수: {file_count}\n"
+                f"변경 태그 수: {tag_count}\n"
+                "백업 위치: 각 파일 폴더의 .aseprite_backup\n"
+                "백업 실패 시 해당 파일 저장은 중단됩니다."
+            ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -678,7 +902,8 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        self.aseprite_path = r"C:\Program Files (x86)\Steam\steamapps\common\Aseprite\aseprite.exe"
+        self.settings = load_settings()
+        self.aseprite_path = self.settings.get("aseprite_path", DEFAULT_ASEPRITE_PATH)
         self.loaded_files = set()
         self.custom_dict = load_dictionary()
 
@@ -788,13 +1013,21 @@ class MainWindow(QMainWindow):
         if path:
             self.aseprite_path = path
             self.path_label.setText(f"Aseprite Path: {self.aseprite_path}")
+            self.settings["aseprite_path"] = self.aseprite_path
+            save_settings(self.settings)
+            self.log_box.append("Aseprite 경로가 저장되었습니다.")
 
     def open_dict_editor(self):
         dialog = DictEditorDialog(self, self.custom_dict)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.custom_dict = dialog.current_dict
-            save_dictionary(self.custom_dict)
-            self.log_box.append("단어 사전이 업데이트 되었습니다.")
+            try:
+                save_dictionary(self.custom_dict)
+                self.custom_dict = load_dictionary()
+                self.log_box.append("단어 사전이 업데이트 되었습니다.")
+            except Exception as e:
+                write_error_log("Failed to save custom dictionary.", e)
+                QMessageBox.critical(self, "사전 저장 실패", f"custom_dictionary.json 저장에 실패했습니다.\n{str(e)}")
 
     def add_files(self, files):
         for f in files:
@@ -821,12 +1054,14 @@ class MainWindow(QMainWindow):
 
     def get_replace_pairs(self):
         pairs = []
+        seen_find = set()
         for i in range(self.replace_table.rowCount()):
             find_item = self.replace_table.item(i, 0)
             rep_item = self.replace_table.item(i, 1)
             f_str = find_item.text().strip() if find_item else ""
             r_str = rep_item.text().strip() if rep_item else ""
-            if f_str:
+            if f_str and f_str not in seen_find:
+                seen_find.add(f_str)
                 pairs.append((f_str, r_str))
         return pairs
 

@@ -32,4 +32,8 @@ Thumbs.db
 # Project specific
 *.ase
 *.aseprite
+*.zip
+*.log
 *.json.bak
+settings.json
+aseprite_tag_master_error.log
