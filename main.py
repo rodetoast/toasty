@@ -28,6 +28,14 @@ LOG_FILE_PATH = os.path.join(APP_DIR, "aseprite_tag_master_error.log")
 DEFAULT_ASEPRITE_PATH = r"C:\Program Files (x86)\Steam\steamapps\common\Aseprite\aseprite.exe"
 ASEPRITE_TIMEOUT_SECONDS = 60
 COLLISION_ISSUE = "이름 충돌 위험"
+EXPLICIT_TYPO_ISSUE = "명시적 오타 교정"
+FUZZY_SUGGESTION_ISSUE = "스펠링 제안"
+NAMING_ISSUE = "네이밍 규칙 위반"
+REPLACE_ISSUE = "일괄 단어 치환"
+LOOP_REPEAT_ISSUE = "Loop 속성(Repeat) 누락"
+CORRECTION_NONE = "none"
+CORRECTION_EXPLICIT_TYPO = "explicit_typo"
+CORRECTION_FUZZY_SUGGESTION = "fuzzy_suggestion"
 DEFAULT_DICTIONARY = [
     # 기존 추출된 핵심 단어들
     "Attack", "Ready", "Groggy", "End", "(Loop)", "Channeling", "Break", "Idle", "Walk", "Run", 
@@ -174,21 +182,21 @@ def describe_subprocess_failure(cmd, result, file_path=None):
     ]
     return "\n".join(lines)
 
-def correct_spelling(word, custom_dict, threshold=85, margin=8):
+def correct_spelling_detailed(word, custom_dict, threshold=85, margin=8):
     if len(word) <= 2:
-        return word.capitalize(), False
+        return word.capitalize(), CORRECTION_NONE
         
     word_lower = word.lower()
     dict_lower = {w.lower(): w for w in custom_dict}
     
     if word_lower in dict_lower:
-        return dict_lower[word_lower], False
+        return dict_lower[word_lower], CORRECTION_NONE
 
     typo_target = DEFAULT_TYPO_CORRECTIONS.get(word_lower)
     if typo_target:
         typo_lower = typo_target.lower()
         if typo_lower in dict_lower:
-            return dict_lower[typo_lower], True
+            return dict_lower[typo_lower], CORRECTION_EXPLICIT_TYPO
 
     choices = list(dict_lower.keys())
     matches = process.extract(word_lower, choices, scorer=fuzz.ratio, limit=2)
@@ -199,22 +207,30 @@ def correct_spelling(word, custom_dict, threshold=85, margin=8):
         second_score = matches[1][1] if len(matches) > 1 else 0
 
         if word_lower[0] != corrected_lower[0]:
-            return word.capitalize(), False
+            return word.capitalize(), CORRECTION_NONE
         if corrected_lower.endswith(word_lower) and corrected_lower != word_lower:
-            return word.capitalize(), False
+            return word.capitalize(), CORRECTION_NONE
         if abs(len(word_lower) - len(corrected_lower)) > 1:
-            return word.capitalize(), False
+            return word.capitalize(), CORRECTION_NONE
         if best_match[1] - second_score < margin:
-            return word.capitalize(), False
+            return word.capitalize(), CORRECTION_NONE
         
         corrected_word = dict_lower[corrected_lower]
-        return corrected_word, True
+        return corrected_word, CORRECTION_FUZZY_SUGGESTION
         
-    return word.capitalize(), False
+    return word.capitalize(), CORRECTION_NONE
+
+def correct_spelling(word, custom_dict, threshold=85, margin=8):
+    corrected_word, correction_type = correct_spelling_detailed(word, custom_dict, threshold, margin)
+    return corrected_word, correction_type != CORRECTION_NONE
 
 def format_tag_name(name, custom_dict):
+    details = format_tag_name_details(name, custom_dict)
+    return details['name'], details['is_loop'], bool(details['correction_types'])
+
+def format_tag_name_details(name, custom_dict):
     is_loop = False
-    spelling_corrected = False
+    correction_types = set()
     
     if "_(Loop)" in name:
         is_loop = True
@@ -238,10 +254,10 @@ def format_tag_name(name, custom_dict):
         final_sub_words = []
         for sw in sub_words:
             # 1. 먼저 전체 단어에 대해 스펠링 교정을 시도합니다
-            corrected_sw, was_corrected = correct_spelling(sw, custom_dict)
+            corrected_sw, correction_type = correct_spelling_detailed(sw, custom_dict)
             
-            if was_corrected:
-                spelling_corrected = True
+            if correction_type != CORRECTION_NONE:
+                correction_types.add(correction_type)
                 final_sub_words.append(corrected_sw)
             elif sw.islower() and len(sw) >= 4:
                 # 2. 스펠링 교정이 안 되었고, 전부 소문자라면 wordninja로 쪼개기 시도
@@ -249,9 +265,9 @@ def format_tag_name(name, custom_dict):
                 
                 if len(split_sw) > 1:
                     for w in split_sw:
-                        corrected_w, was_corrected_w = correct_spelling(w, custom_dict)
-                        if was_corrected_w:
-                            spelling_corrected = True
+                        corrected_w, correction_type_w = correct_spelling_detailed(w, custom_dict)
+                        if correction_type_w != CORRECTION_NONE:
+                            correction_types.add(correction_type_w)
                         final_sub_words.append(corrected_w)
                 else:
                     final_sub_words.append(sw[0].upper() + sw[1:])
@@ -265,7 +281,11 @@ def format_tag_name(name, custom_dict):
     if is_loop:
         final_name += "_(Loop)"
         
-    return final_name, is_loop, spelling_corrected
+    return {
+        'name': final_name,
+        'is_loop': is_loop,
+        'correction_types': correction_types,
+    }
 
 class AnalysisThread(QThread):
     log_signal = pyqtSignal(str)
@@ -341,7 +361,7 @@ file:close()
 
 class ApplyThread(QThread):
     log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
+    finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
     def __init__(self, file_modifications, aseprite_path):
@@ -350,15 +370,29 @@ class ApplyThread(QThread):
         self.aseprite_path = aseprite_path
 
     def run(self):
+        summary = {
+            'success_files': [],
+            'failed_files': [],
+            'changed_tags': 0,
+            'backup_verified_files': [],
+            'save_verified_files': [],
+        }
         for file_path, mods in self.file_modifications.items():
             if not mods:
                 continue
             try:
-                self.apply_to_file(file_path, mods)
+                result = self.apply_to_file(file_path, mods)
+                summary['success_files'].append(file_path)
+                summary['changed_tags'] += result['changed_tags']
+                if result.get('backup_verified'):
+                    summary['backup_verified_files'].append(file_path)
+                if result.get('save_verified'):
+                    summary['save_verified_files'].append(file_path)
             except Exception as e:
                 write_error_log(f"Error modifying {file_path}", e)
+                summary['failed_files'].append({'file_path': file_path, 'reason': str(e)})
                 self.error_signal.emit(f"Error modifying {os.path.basename(file_path)}: {str(e)}")
-        self.finished_signal.emit()
+        self.finished_signal.emit(summary)
 
     def apply_to_file(self, file_path, mods):
         if not os.path.exists(file_path):
@@ -396,6 +430,7 @@ class ApplyThread(QThread):
             if not os.path.exists(backup_path) or os.path.getsize(backup_path) != before_size:
                 raise Exception("백업 파일 검증에 실패했습니다.")
             self.log_signal.emit(f"백업 완료: .aseprite_backup/{os.path.basename(backup_path)}")
+            backup_verified = True
         except Exception as e:
             raise Exception(f"백업 실패로 저장을 중단합니다: {str(e)}") from e
 
@@ -434,6 +469,11 @@ end
             if after_size <= 0:
                 raise Exception("저장 후 파일이 없거나 크기가 0입니다.")
             self.verify_saved_tags(file_path, mods)
+            return {
+                'changed_tags': len(mods),
+                'backup_verified': backup_verified,
+                'save_verified': True,
+            }
         finally:
             try:
                 os.remove(lua_path)
@@ -494,20 +534,25 @@ def build_report_entries(analysis_data, custom_dict, replace_pairs=None):
             for f_str, r_str in replace_pairs:
                 intermediate_name = intermediate_name.replace(f_str, r_str)
 
-            new_name, is_loop, spelling_corrected = format_tag_name(intermediate_name, custom_dict)
+            details = format_tag_name_details(intermediate_name, custom_dict)
+            new_name = details['name']
+            is_loop = details['is_loop']
+            correction_types = details['correction_types']
             set_repeat = is_loop and tag.get('repeats') != 1
             final_name = new_name if (original_name != new_name or set_repeat) else original_name
             final_names.append(final_name)
 
             issues = []
             if original_name != intermediate_name:
-                issues.append("일괄 단어 치환")
-            if spelling_corrected:
-                issues.append("스펠링 교정")
-            elif intermediate_name != new_name:
-                issues.append("네이밍 규칙 위반")
+                issues.append(REPLACE_ISSUE)
+            if CORRECTION_EXPLICIT_TYPO in correction_types:
+                issues.append(EXPLICIT_TYPO_ISSUE)
+            if CORRECTION_FUZZY_SUGGESTION in correction_types:
+                issues.append(FUZZY_SUGGESTION_ISSUE)
+            if not correction_types and intermediate_name != new_name:
+                issues.append(NAMING_ISSUE)
             if set_repeat:
-                issues.append("Loop 속성(Repeat) 누락")
+                issues.append(LOOP_REPEAT_ISSUE)
 
             file_entries.append({
                 'file_path': file_path,
@@ -515,7 +560,7 @@ def build_report_entries(analysis_data, custom_dict, replace_pairs=None):
                 'new_name': new_name,
                 'set_repeat': set_repeat,
                 'issues': issues,
-                'checked': True,
+                'checked': FUZZY_SUGGESTION_ISSUE not in issues,
             })
 
         duplicate_names = {
@@ -535,6 +580,54 @@ def build_report_entries(analysis_data, custom_dict, replace_pairs=None):
 def count_tags(analysis_data):
     return sum(len(tags) for tags in analysis_data.values())
 
+def count_report_issues(entries):
+    issue_counts = {}
+    for entry in entries:
+        for issue in entry['issues']:
+            issue_counts[issue] = issue_counts.get(issue, 0) + 1
+    return issue_counts
+
+def build_report_summary(analysis_data, entries, analysis_failures=None):
+    analysis_failures = analysis_failures or []
+    applicable_entries = [entry for entry in entries if COLLISION_ISSUE not in entry['issues']]
+    return {
+        'file_count': len(analysis_data),
+        'tag_count': count_tags(analysis_data),
+        'entry_count': len(entries),
+        'applicable_count': len(applicable_entries),
+        'checked_count': sum(1 for entry in applicable_entries if entry.get('checked')),
+        'unchecked_suggestion_count': sum(
+            1 for entry in applicable_entries
+            if FUZZY_SUGGESTION_ISSUE in entry['issues'] and not entry.get('checked')
+        ),
+        'collision_count': sum(1 for entry in entries if COLLISION_ISSUE in entry['issues']),
+        'issue_counts': count_report_issues(entries),
+        'analysis_failure_count': len(analysis_failures),
+    }
+
+def format_report_summary_text(summary):
+    issue_order = [
+        NAMING_ISSUE,
+        EXPLICIT_TYPO_ISSUE,
+        FUZZY_SUGGESTION_ISSUE,
+        LOOP_REPEAT_ISSUE,
+        COLLISION_ISSUE,
+        REPLACE_ISSUE,
+    ]
+    issue_counts = summary['issue_counts']
+    issue_parts = [f"{issue}: {issue_counts.get(issue, 0)}" for issue in issue_order]
+    return (
+        f"분석 파일 수: {summary['file_count']}  |  "
+        f"분석 태그 수: {summary['tag_count']}  |  "
+        f"수정 후보 수: {summary['entry_count']}  |  "
+        f"적용 가능 항목 수: {summary['applicable_count']}  |  "
+        f"기본 체크된 항목 수: {summary['checked_count']}  |  "
+        f"체크 해제된 제안 수: {summary['unchecked_suggestion_count']}  |  "
+        f"차단된 충돌 위험 수: {summary['collision_count']}  |  "
+        f"분석 실패 파일 수: {summary['analysis_failure_count']}\n"
+        + "  /  ".join(issue_parts)
+    )
+
 def format_no_issues_message(analysis_data):
     file_count = len(analysis_data)
     tag_count = count_tags(analysis_data)
@@ -544,8 +637,42 @@ def format_no_issues_message(analysis_data):
         f"분석 파일 수: {file_count}\n"
         f"분석 태그 수: {tag_count}\n"
         "발견된 문제 수: 0\n\n"
-        "네이밍 규칙 위반, 스펠링 교정, Loop repeat 누락, 이름 충돌 위험 항목이 없습니다."
+        "네이밍 규칙 위반, 명시적 오타 교정, 스펠링 제안, Loop repeat 누락, 이름 충돌 위험 항목이 없습니다."
     )
+
+def format_analysis_incomplete_message(analysis_data, analysis_failures):
+    file_count = len(analysis_data)
+    tag_count = count_tags(analysis_data)
+    lines = [
+        "검수 완료",
+        "",
+        "수정 후보는 없지만, 분석 실패 파일이 있어 전체를 문제 없음으로 볼 수 없습니다.",
+        "",
+        f"분석 성공 파일 수: {file_count}",
+        f"분석 태그 수: {tag_count}",
+        f"분석 실패 파일 수: {len(analysis_failures)}",
+        "",
+        "실패 파일:",
+    ]
+    lines.extend(f"- {failure}" for failure in analysis_failures)
+    return "\n".join(lines)
+
+def format_apply_summary_message(summary):
+    lines = [
+        "저장 완료 요약",
+        "",
+        f"성공 파일 수: {len(summary.get('success_files', []))}",
+        f"실패 파일 수: {len(summary.get('failed_files', []))}",
+        f"변경 태그 수: {summary.get('changed_tags', 0)}",
+        f"백업 생성/검증 성공 파일 수: {len(summary.get('backup_verified_files', []))}",
+        f"저장 후 검증 성공 파일 수: {len(summary.get('save_verified_files', []))}",
+    ]
+    failed_files = summary.get('failed_files', [])
+    if failed_files:
+        lines.extend(["", "실패 파일:"])
+        for failure in failed_files:
+            lines.append(f"- {os.path.basename(failure['file_path'])}: {failure['reason']}")
+    return "\n".join(lines)
 
 def detect_modification_collisions(analysis_data, file_modifications):
     collisions = []
@@ -588,18 +715,26 @@ def format_collision_message(collisions, max_items=10):
     return "\n".join(lines)
 
 class ReportDialog(QDialog):
-    def __init__(self, parent, analysis_data, custom_dict, replace_pairs=None):
+    def __init__(self, parent, analysis_data, custom_dict, replace_pairs=None, entries=None, analysis_failures=None):
         super().__init__(parent)
         self.setWindowTitle("검수 리포트 (Check Report) - 체크 해제 시 적용 안됨")
         self.resize(1000, 700)
         self.analysis_data = analysis_data
         self.custom_dict = custom_dict
         self.replace_pairs = replace_pairs or []
+        self.entries = entries if entries is not None else build_report_entries(analysis_data, custom_dict, self.replace_pairs)
+        self.analysis_failures = analysis_failures or []
         self.modifications_to_apply = {} 
         self.checkboxes = []
         self.issue_types_found = set()
 
         layout = QVBoxLayout(self)
+
+        summary = build_report_summary(self.analysis_data, self.entries, self.analysis_failures)
+        self.summary_label = QLabel(format_report_summary_text(summary))
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("font-weight: 600; padding: 6px;")
+        layout.addWidget(self.summary_label)
         
         filter_group = QGroupBox("이슈별 일괄 선택/해제 (Batch Selection by Issue)")
         self.filter_layout = QHBoxLayout()
@@ -638,7 +773,7 @@ class ReportDialog(QDialog):
 
     def populate_table(self):
         row_idx = 0
-        for entry in build_report_entries(self.analysis_data, self.custom_dict, self.replace_pairs):
+        for entry in self.entries:
             self.table.insertRow(row_idx)
 
             chk_widget = QWidget()
@@ -683,7 +818,8 @@ class ReportDialog(QDialog):
 
     def create_filter_checkboxes(self):
         self.chk_all = QCheckBox("전체 선택/해제 (Select All)")
-        self.chk_all.setChecked(True)
+        enabled_items = [item for item in self.checkboxes if not item.get('is_collision')]
+        self.chk_all.setChecked(bool(enabled_items) and all(item['checkbox'].isChecked() for item in enabled_items))
         self.chk_all.setStyleSheet("font-weight: bold;")
         self.chk_all.stateChanged.connect(self.toggle_all)
         self.filter_layout.addWidget(self.chk_all)
@@ -691,7 +827,7 @@ class ReportDialog(QDialog):
         self.issue_filter_boxes = {}
         for issue_type in sorted(list(self.issue_types_found)):
             chk = QCheckBox(issue_type)
-            chk.setChecked(True)
+            chk.setChecked(issue_type != FUZZY_SUGGESTION_ISSUE)
             chk.stateChanged.connect(lambda state, itype=issue_type: self.toggle_by_issue(itype, state))
             self.filter_layout.addWidget(chk)
             self.issue_filter_boxes[issue_type] = chk
@@ -938,6 +1074,7 @@ class MainWindow(QMainWindow):
         self.aseprite_path = self.settings.get("aseprite_path", DEFAULT_ASEPRITE_PATH)
         self.loaded_files = set()
         self.custom_dict = load_dictionary()
+        self.analysis_failures = []
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -1110,20 +1247,32 @@ class MainWindow(QMainWindow):
 
         self.analysis_thread = AnalysisThread(list(self.loaded_files), self.aseprite_path)
         self.analysis_thread.result_signal.connect(self.show_report)
-        self.analysis_thread.error_signal.connect(lambda e: self.log_box.append(f"<font color='red'>{e}</font>"))
+        self.analysis_failures = []
+        self.analysis_thread.error_signal.connect(self.record_analysis_failure)
         self.analysis_thread.start()
+
+    def record_analysis_failure(self, error_message):
+        self.analysis_failures.append(error_message)
+        self.log_box.append(f"<font color='red'>{error_message}</font>")
 
     def show_report(self, analysis_data):
         self.setEnabled(True)
         pairs = self.get_replace_pairs()
         entries = build_report_entries(analysis_data, self.custom_dict, pairs)
         if not entries:
+            if self.analysis_failures:
+                message = format_analysis_incomplete_message(analysis_data, self.analysis_failures)
+                self.log_box.append("검수 완료: 수정 후보 없음, 분석 실패 파일 있음")
+                QMessageBox.warning(self, "검수 완료 - 분석 실패 있음", message)
+                return
             message = format_no_issues_message(analysis_data)
             self.log_box.append("검수 완료: 문제 없음")
             QMessageBox.information(self, "검수 완료", message)
             return
+        if self.analysis_failures:
+            self.log_box.append(f"<font color='orange'>분석 실패 파일 수: {len(self.analysis_failures)}</font>")
 
-        dialog = ReportDialog(self, analysis_data, self.custom_dict, pairs)
+        dialog = ReportDialog(self, analysis_data, self.custom_dict, pairs, entries, self.analysis_failures)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.apply_modifications(dialog.modifications_to_apply)
         else:
@@ -1138,10 +1287,14 @@ class MainWindow(QMainWindow):
         self.apply_thread.finished_signal.connect(self.on_apply_finished)
         self.apply_thread.start()
 
-    def on_apply_finished(self):
+    def on_apply_finished(self, summary):
         self.setEnabled(True)
-        self.log_box.append("=== 모든 수정 및 저장이 완료되었습니다! ===")
-        QMessageBox.information(self, "완료", "파일 저장이 완료되었습니다.")
+        message = format_apply_summary_message(summary)
+        self.log_box.append(message.replace("\n", "<br>"))
+        if summary.get('failed_files'):
+            QMessageBox.warning(self, "저장 완료 - 실패 있음", message)
+        else:
+            QMessageBox.information(self, "완료", message)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

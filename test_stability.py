@@ -104,6 +104,44 @@ def test_conservative_fuzzy_guards():
     assert_equal((corrected, was_corrected), ("Attack", True), "explicit typo survives guards")
 
 
+def test_spelling_correction_types():
+    assert_equal(
+        main.correct_spelling_detailed("attck", main.DEFAULT_DICTIONARY),
+        ("Attack", main.CORRECTION_EXPLICIT_TYPO),
+        "explicit typo correction type",
+    )
+    assert_equal(
+        main.correct_spelling_detailed("recovey", ["Recovery"]),
+        ("Recovery", main.CORRECTION_FUZZY_SUGGESTION),
+        "fuzzy suggestion correction type",
+    )
+    assert_equal(
+        main.correct_spelling_detailed("wing", ["Swing"]),
+        ("Wing", main.CORRECTION_NONE),
+        "blocked fuzzy correction type",
+    )
+
+
+def test_spelling_report_entry_defaults():
+    explicit_entries = main.build_report_entries(
+        {"sample.aseprite": [{"name": "attck", "repeats": 0}]},
+        main.DEFAULT_DICTIONARY,
+    )
+    assert explicit_entries, "explicit typo entry missing"
+    explicit_entry = explicit_entries[0]
+    assert main.EXPLICIT_TYPO_ISSUE in explicit_entry["issues"]
+    assert_equal(explicit_entry["checked"], True, "explicit typo defaults checked")
+
+    fuzzy_entries = main.build_report_entries(
+        {"sample.aseprite": [{"name": "recovey", "repeats": 0}]},
+        ["Recovery"],
+    )
+    assert fuzzy_entries, "fuzzy suggestion entry missing"
+    fuzzy_entry = fuzzy_entries[0]
+    assert main.FUZZY_SUGGESTION_ISSUE in fuzzy_entry["issues"]
+    assert_equal(fuzzy_entry["checked"], False, "fuzzy suggestion defaults unchecked")
+
+
 def test_collision_report_entry_defaults_off():
     analysis = {
         "sample.aseprite": [
@@ -162,6 +200,24 @@ def test_report_toggle_all_does_not_enable_collision_items():
         assert_equal(item["checkbox"].isEnabled(), False, "collision is disabled")
 
 
+def test_report_summary_counts():
+    analysis = {
+        "sample.aseprite": [
+            {"name": "attck", "repeats": 0},
+            {"name": "recovey", "repeats": 0},
+            {"name": "Idle_(Loop)", "repeats": 0},
+        ]
+    }
+    entries = main.build_report_entries(analysis, main.DEFAULT_DICTIONARY)
+    summary = main.build_report_summary(analysis, entries, ["Error reading broken.aseprite"])
+    assert_equal(summary["file_count"], 1, "summary file count")
+    assert_equal(summary["tag_count"], 3, "summary tag count")
+    assert_equal(summary["analysis_failure_count"], 1, "summary failure count")
+    assert summary["issue_counts"].get(main.EXPLICIT_TYPO_ISSUE, 0) >= 1
+    assert summary["issue_counts"].get(main.FUZZY_SUGGESTION_ISSUE, 0) >= 1
+    assert summary["issue_counts"].get(main.LOOP_REPEAT_ISSUE, 0) >= 1
+
+
 def test_no_issues_report_helpers():
     analysis = {
         "sample.aseprite": [
@@ -183,6 +239,41 @@ def test_no_issues_report_helpers():
             raise AssertionError(f"no issue message missing {expected!r}: {message}")
 
 
+def test_analysis_incomplete_message():
+    analysis = {"sample.aseprite": [{"name": "Attack", "repeats": 0}]}
+    failures = ["Error reading broken.aseprite: boom"]
+    message = main.format_analysis_incomplete_message(analysis, failures)
+    for expected in [
+        "전체를 문제 없음으로 볼 수 없습니다.",
+        "분석 성공 파일 수: 1",
+        "분석 실패 파일 수: 1",
+        "broken.aseprite",
+    ]:
+        if expected not in message:
+            raise AssertionError(f"analysis incomplete message missing {expected!r}: {message}")
+
+
+def test_apply_summary_message():
+    summary = {
+        "success_files": ["ok.aseprite"],
+        "failed_files": [{"file_path": "bad.aseprite", "reason": "timeout"}],
+        "changed_tags": 2,
+        "backup_verified_files": ["ok.aseprite"],
+        "save_verified_files": ["ok.aseprite"],
+    }
+    message = main.format_apply_summary_message(summary)
+    for expected in [
+        "성공 파일 수: 1",
+        "실패 파일 수: 1",
+        "변경 태그 수: 2",
+        "백업 생성/검증 성공 파일 수: 1",
+        "저장 후 검증 성공 파일 수: 1",
+        "bad.aseprite: timeout",
+    ]:
+        if expected not in message:
+            raise AssertionError(f"apply summary missing {expected!r}: {message}")
+
+
 if __name__ == "__main__":
     test_lua_quote()
     test_dictionary_and_settings_fallback()
@@ -191,9 +282,14 @@ if __name__ == "__main__":
     test_wing_is_not_corrected_to_swing()
     test_custom_dictionary_extends_defaults()
     test_conservative_fuzzy_guards()
+    test_spelling_correction_types()
+    test_spelling_report_entry_defaults()
     test_collision_report_entry_defaults_off()
     test_apply_time_collision_detection_blocks_save()
     test_normal_modification_has_no_collision()
     test_report_toggle_all_does_not_enable_collision_items()
+    test_report_summary_counts()
     test_no_issues_report_helpers()
+    test_analysis_incomplete_message()
+    test_apply_summary_message()
     print("stability tests ok")
