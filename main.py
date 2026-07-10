@@ -532,6 +532,21 @@ def build_report_entries(analysis_data, custom_dict, replace_pairs=None):
 
     return entries
 
+def count_tags(analysis_data):
+    return sum(len(tags) for tags in analysis_data.values())
+
+def format_no_issues_message(analysis_data):
+    file_count = len(analysis_data)
+    tag_count = count_tags(analysis_data)
+    return (
+        "검수 완료\n\n"
+        "문제가 발견되지 않았습니다.\n\n"
+        f"분석 파일 수: {file_count}\n"
+        f"분석 태그 수: {tag_count}\n"
+        "발견된 문제 수: 0\n\n"
+        "네이밍 규칙 위반, 스펠링 교정, Loop repeat 누락, 이름 충돌 위험 항목이 없습니다."
+    )
+
 def detect_modification_collisions(analysis_data, file_modifications):
     collisions = []
 
@@ -1101,6 +1116,13 @@ class MainWindow(QMainWindow):
     def show_report(self, analysis_data):
         self.setEnabled(True)
         pairs = self.get_replace_pairs()
+        entries = build_report_entries(analysis_data, self.custom_dict, pairs)
+        if not entries:
+            message = format_no_issues_message(analysis_data)
+            self.log_box.append("검수 완료: 문제 없음")
+            QMessageBox.information(self, "검수 완료", message)
+            return
+
         dialog = ReportDialog(self, analysis_data, self.custom_dict, pairs)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.apply_modifications(dialog.modifications_to_apply)

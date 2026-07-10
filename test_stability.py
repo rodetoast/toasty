@@ -162,6 +162,27 @@ def test_report_toggle_all_does_not_enable_collision_items():
         assert_equal(item["checkbox"].isEnabled(), False, "collision is disabled")
 
 
+def test_no_issues_report_helpers():
+    analysis = {
+        "sample.aseprite": [
+            {"name": "Idle_(Loop)", "repeats": 1},
+            {"name": "Attack", "repeats": 0},
+        ]
+    }
+    assert_equal(main.build_report_entries(analysis, main.DEFAULT_DICTIONARY), [], "no issue entries")
+    assert_equal(main.count_tags(analysis), 2, "tag count")
+
+    message = main.format_no_issues_message(analysis)
+    for expected in [
+        "문제가 발견되지 않았습니다.",
+        "분석 파일 수: 1",
+        "분석 태그 수: 2",
+        "발견된 문제 수: 0",
+    ]:
+        if expected not in message:
+            raise AssertionError(f"no issue message missing {expected!r}: {message}")
+
+
 if __name__ == "__main__":
     test_lua_quote()
     test_dictionary_and_settings_fallback()
@@ -174,4 +195,5 @@ if __name__ == "__main__":
     test_apply_time_collision_detection_blocks_save()
     test_normal_modification_has_no_collision()
     test_report_toggle_all_does_not_enable_collision_items()
+    test_no_issues_report_helpers()
     print("stability tests ok")
