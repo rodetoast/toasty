@@ -1,0 +1,18 @@
+Aseprite Tag Master
+Version: v0.4.0
+
+Build hash is generated at package time and shown inside the app.
+
+Recommended release folder:
+AsepriteTagMaster_v0.4.0_<build>_Release
+
+Recommended zip:
+AsepriteTagMaster_v0.4.0_YYYYMMDD_<build>.zip
+
+Release package contents:
+- AsepriteTagMaster.exe
+- custom_dictionary.json
+- VERSION.txt
+
+Notes:
+- This release includes report summary UX, spelling suggestion separation, safer collision handling, backup, and save verification.

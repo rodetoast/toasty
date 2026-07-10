@@ -30,6 +30,7 @@ wheels/
 Thumbs.db
 
 # Project specific
+_build_info.py
 *.ase
 *.aseprite
 *.zip

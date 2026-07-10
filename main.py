@@ -17,6 +17,23 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 
+APP_NAME = "Aseprite Tag Master"
+APP_VERSION = "0.4.0"
+APP_BUILD = "dev"
+APP_COMMIT = "unknown"
+APP_BUILD_DATE = "unknown"
+
+try:
+    from _build_info import BUILD_HASH, FULL_COMMIT, BUILD_DATE
+    APP_BUILD = BUILD_HASH
+    APP_COMMIT = FULL_COMMIT
+    APP_BUILD_DATE = BUILD_DATE
+except Exception:
+    pass
+
+APP_RELEASE_NAME = f"{APP_NAME} v{APP_VERSION}"
+APP_FULL_VERSION = f"v{APP_VERSION} ({APP_BUILD})"
+
 # --- Global Dictionary Configuration ---
 if getattr(sys, "frozen", False):
     APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
@@ -91,6 +108,24 @@ DEFAULT_TYPO_CORRECTIONS = {
     "recovry": "Recovery",
     "chanelling": "Channeling",
 }
+
+def get_version_text():
+    return f"Version: v{APP_VERSION} | Build: {APP_BUILD}"
+
+def format_about_message():
+    return (
+        f"{APP_NAME}\n"
+        f"Version: v{APP_VERSION}\n"
+        f"Build: {APP_BUILD}\n\n"
+        "주요 변경:\n"
+        "- 저장 안정성 강화\n"
+        "- 백업 및 저장 후 검증\n"
+        "- 태그명 충돌 차단\n"
+        "- 명시적 오타 교정 / 스펠링 제안 분리\n"
+        "- 리포트 요약\n"
+        "- 문제 없음 / 분석 실패 상태 분리\n"
+        "- 저장 완료 요약"
+    )
 
 def load_dictionary():
     if os.path.exists(DICT_FILE_PATH):
@@ -931,7 +966,7 @@ class DropListWidget(QListWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Aseprite Tag Master")
+        self.setWindowTitle(APP_RELEASE_NAME)
         self.resize(850, 800)
 
         # ---------------------------------------------------
@@ -1094,6 +1129,12 @@ class MainWindow(QMainWindow):
         btn_path = QPushButton("경로 변경")
         btn_path.setFixedWidth(120)
         btn_path.clicked.connect(self.change_aseprite_path)
+
+        self.version_label = QLabel(get_version_text())
+        self.version_label.setStyleSheet("color: #888; font-size: 11px;")
+        btn_about = QPushButton("버전 정보")
+        btn_about.setFixedWidth(120)
+        btn_about.clicked.connect(self.show_about)
         
         btn_dict = QPushButton("📖 스펠링 사전 편집")
         btn_dict.clicked.connect(self.open_dict_editor)
@@ -1101,7 +1142,9 @@ class MainWindow(QMainWindow):
         
         path_layout.addWidget(self.path_label, 0, 0)
         path_layout.addWidget(btn_path, 0, 1)
-        path_layout.addWidget(btn_dict, 1, 0, 1, 2)
+        path_layout.addWidget(self.version_label, 1, 0)
+        path_layout.addWidget(btn_about, 1, 1)
+        path_layout.addWidget(btn_dict, 2, 0, 1, 2)
         group_settings.setLayout(path_layout)
         layout.addWidget(group_settings)
 
@@ -1233,6 +1276,9 @@ class MainWindow(QMainWindow):
                 seen_find.add(f_str)
                 pairs.append((f_str, r_str))
         return pairs
+
+    def show_about(self):
+        QMessageBox.information(self, "버전 정보", format_about_message())
 
     def start_analysis(self):
         if not self.loaded_files:

@@ -59,7 +59,7 @@ if errorlevel 1 (
 )
 
 if /I "%~1"=="--check" (
-    "%VENV_PY%" -c "import PyQt6, wordninja, thefuzz, Levenshtein, main; print('run_app check ok')"
+    "%VENV_PY%" -c "import PyQt6, wordninja, thefuzz, Levenshtein, main; print('run_app check ok'); print('version: v' + main.APP_VERSION); print('build: ' + main.APP_BUILD)"
     exit /b %errorlevel%
 )
 

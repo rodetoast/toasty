@@ -38,3 +38,23 @@ python main.py
 - **Aseprite CLI & Lua API** (File parsing & modification)
 - **Wordninja** (Natural Language Processing for word splitting)
 - **TheFuzz** (String matching & Spell checking)
+
+## 릴리즈 패키징 정책
+
+- 권장 릴리즈 폴더명: `AsepriteTagMaster_v0.4.0_5f7f9f4_Release`
+- 권장 zip 파일명: `AsepriteTagMaster_v0.4.0_20260710_5f7f9f4.zip`
+- zip 내부 구성:
+  - `AsepriteTagMaster.exe`
+  - `custom_dictionary.json`
+  - `VERSION.txt`
+
+exe 파일명은 안정성을 위해 `AsepriteTagMaster.exe`를 유지합니다. 버전은 앱 내부, `VERSION.txt`, 폴더명, zip 파일명에서 확인합니다.
+
+빌드 전에는 현재 git 커밋 정보를 `_build_info.py`로 생성한 뒤 PyInstaller를 실행합니다.
+
+```bash
+venv\Scripts\python.exe create_build_info.py
+venv\Scripts\python.exe -m PyInstaller --clean --noconfirm AsepriteTagMaster.spec
+```
+
+`_build_info.py`는 빌드 시점 생성 파일이며 git에 커밋하지 않습니다.

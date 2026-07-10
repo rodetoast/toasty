@@ -56,6 +56,29 @@ def test_normalize_words():
     assert_equal(main.normalize_words(words), ["Attack", "Groggy", "Loop"], "normalize words")
 
 
+def test_version_metadata():
+    assert_equal(main.APP_NAME, "Aseprite Tag Master", "app name")
+    assert_equal(main.APP_VERSION, "0.4.0", "app version")
+    assert main.APP_BUILD, "APP_BUILD must not be empty"
+    assert "v0.4.0" in main.APP_RELEASE_NAME
+
+    version_text = main.get_version_text()
+    assert "v0.4.0" in version_text
+    assert main.APP_BUILD in version_text
+
+    about_message = main.format_about_message()
+    for expected in [
+        "Aseprite Tag Master",
+        "Version: v0.4.0",
+        "Build:",
+        "저장 안정성 강화",
+        "명시적 오타 교정 / 스펠링 제안 분리",
+        "리포트 요약",
+    ]:
+        if expected not in about_message:
+            raise AssertionError(f"about message missing {expected!r}: {about_message}")
+
+
 def test_formatting_examples():
     custom_dict = main.DEFAULT_DICTIONARY.copy()
     assert_equal(main.format_tag_name("chase_attck_End", custom_dict), ("Chase_Attack_End", False, True), "spell correction")
@@ -278,6 +301,7 @@ if __name__ == "__main__":
     test_lua_quote()
     test_dictionary_and_settings_fallback()
     test_normalize_words()
+    test_version_metadata()
     test_formatting_examples()
     test_wing_is_not_corrected_to_swing()
     test_custom_dictionary_extends_defaults()
