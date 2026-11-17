@@ -13,9 +13,11 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QPushButton, QFileDialog, QTextEdit, QMessageBox,
                              QListWidget, QHBoxLayout, QLineEdit, QDialog, QTableWidget,
                              QTableWidgetItem, QHeaderView, QGroupBox, QGridLayout,
-                             QCheckBox)
+                             QCheckBox, QScrollArea)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
+from split_dialog import SplitDialog
+from split_engine import collect_input_files
 
 APP_NAME = "Aseprite Tag Master"
 APP_VERSION = "0.4.0"
@@ -947,19 +949,7 @@ class DropListWidget(QListWidget):
             event.ignore()
 
     def dropEvent(self, event):
-        files = []
-        for url in event.mimeData().urls():
-            local_path = url.toLocalFile()
-            if os.path.isfile(local_path):
-                if local_path.lower().endswith(('.ase', '.aseprite')):
-                    files.append(local_path)
-            elif os.path.isdir(local_path):
-                # 폴더인 경우 하위 폴더까지 모두 검색하여 추가
-                for root, _, filenames in os.walk(local_path):
-                    for filename in filenames:
-                        if filename.lower().endswith(('.ase', '.aseprite')):
-                            files.append(os.path.join(root, filename))
-                            
+        files = collect_input_files(url.toLocalFile() for url in event.mimeData().urls())
         if files:
             self.files_dropped.emit(files)
 
@@ -967,7 +957,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_RELEASE_NAME)
-        self.resize(850, 800)
+        available = self.screen().availableGeometry()
+        self.resize(min(720, available.width() - 40), min(980, available.height() - 60))
 
         # ---------------------------------------------------
         # 전체 UI 모던 스타일링 (QSS)
@@ -1113,8 +1104,13 @@ class MainWindow(QMainWindow):
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        # 전체 여백 및 간격 넓히기
-        layout = QVBoxLayout(main_widget)
+        outer_layout = QVBoxLayout(main_widget)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        content = QWidget()
+        self.content_scroll.setWidget(content)
+        outer_layout.addWidget(self.content_scroll, 1)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
@@ -1125,6 +1121,7 @@ class MainWindow(QMainWindow):
         path_layout.setSpacing(10)
         
         self.path_label = QLabel(f"Aseprite 경로: {self.aseprite_path}")
+        self.path_label.setWordWrap(True)
         self.path_label.setStyleSheet("color: #aaa; font-size: 12px;")
         btn_path = QPushButton("경로 변경")
         btn_path.setFixedWidth(120)
@@ -1159,7 +1156,7 @@ class MainWindow(QMainWindow):
         
         self.file_list = DropListWidget()
         self.file_list.setAlternatingRowColors(True)
-        self.file_list.setMinimumHeight(200) # 리스트 위젯 최소 높이 증가
+        self.file_list.setMinimumHeight(150)
         self.file_list.files_dropped.connect(self.add_files)
         file_layout.addWidget(self.file_list)
         
@@ -1193,7 +1190,7 @@ class MainWindow(QMainWindow):
         self.replace_table.setHorizontalHeaderLabels(["찾을 단어 (Find)", "바꿀 단어 (Replace)"])
         self.replace_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.replace_table.verticalHeader().setDefaultSectionSize(40) # 행(Row) 높이를 크게 고정하여 글자가 잘리지 않게 함
-        self.replace_table.setMinimumHeight(200) # 테이블 위젯 높이 증가
+        self.replace_table.setMinimumHeight(120)
         self.replace_table.setMaximumHeight(350)
         self.add_replace_row() # 기본 1행 추가
         replace_layout.addWidget(self.replace_table)
@@ -1211,6 +1208,11 @@ class MainWindow(QMainWindow):
         btn_analyze.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_analyze.clicked.connect(self.start_analysis)
         action_layout.addWidget(btn_analyze)
+
+        self.btn_split = QPushButton("파일 용량 검사 및 분할")
+        self.btn_split.setMinimumHeight(38)
+        self.btn_split.clicked.connect(self.open_split_dialog)
+        action_layout.addWidget(self.btn_split)
         
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
@@ -1218,7 +1220,7 @@ class MainWindow(QMainWindow):
         self.log_box.setPlaceholderText("작업 로그가 이곳에 표시됩니다...")
         action_layout.addWidget(self.log_box)
         
-        layout.addLayout(action_layout)
+        outer_layout.addLayout(action_layout)
 
     def change_aseprite_path(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select aseprite.exe", "", "Executable (*.exe)")
@@ -1279,6 +1281,32 @@ class MainWindow(QMainWindow):
 
     def show_about(self):
         QMessageBox.information(self, "버전 정보", format_about_message())
+
+    def open_split_dialog(self):
+        files = [item.text() for item in self.file_list.selectedItems()]
+        if not files:
+            QMessageBox.information(self, "파일 선택", "파일 목록에서 분할 검사할 파일을 선택해 주세요.")
+            return
+        if not os.path.isfile(self.aseprite_path):
+            QMessageBox.critical(self, "Aseprite 경로", "Aseprite 실행 파일을 찾을 수 없습니다.")
+            return
+        self.split_dialog = SplitDialog(self, files, self.aseprite_path)
+        self.split_dialog.log_signal.connect(self.log_box.append)
+        self.split_dialog.exec()
+
+    def closeEvent(self, event):
+        dialog = getattr(self, "split_dialog", None)
+        if dialog is not None and dialog.busy:
+            dialog.notify_busy_close()
+            event.ignore()
+            return
+        for name in ("analysis_thread", "apply_thread"):
+            worker = getattr(self, name, None)
+            if worker is not None and worker.isRunning():
+                self.log_box.append("검수/저장 중에는 종료할 수 없습니다. 작업 완료 후 닫아 주세요.")
+                event.ignore()
+                return
+        super().closeEvent(event)
 
     def start_analysis(self):
         if not self.loaded_files:
