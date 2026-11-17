@@ -1,3 +1,13 @@
+## 개발 재개 진입점 (2026-11-17)
+
+이 저장소는 **[rodetoast/toasty](https://github.com/rodetoast/toasty)**로 공식 이전됐습니다. 기존 main 코드·Git 이력은 유지합니다.
+
+**최신 개발 소스와 기획/검증 기록은 [codex/migration-checkpoint-20261117](https://github.com/rodetoast/toasty/tree/codex/migration-checkpoint-20261117)에 있습니다.** 새 Codex 세션은 [개발 브랜치의 AGENTS](https://github.com/rodetoast/toasty/blob/codex/migration-checkpoint-20261117/AGENTS.md)를 먼저 읽고 해당 브랜치와 실제 Git 상태를 확인하세요. 기존 대화가 새 주소를 자동 인식한다고 가정하지 않습니다.
+
+소스 보존과 제품 Release 공개는 별개이며 기존 배포/업데이트 채널은 변경하지 않았습니다. 아래 README는 기존 main의 기록입니다.
+
+---
+
 # Aseprite Tag Master
 
 Aseprite(`.ase`, `.aseprite`) 파일의 애니메이션 태그(Tags) 이름과 속성을 자동으로 검수하고 일괄 수정해주는 Windows 데스크톱 애플리케이션입니다.
