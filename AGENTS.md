@@ -39,3 +39,10 @@
 - 승인 범위 밖의 운영 공개, Repository Transfer/삭제, 실제 직원 PC 변경, 데이터 삭제·초기화, 중대한 키/신뢰·보안 정책 변경, 기존 업데이트 연결 단절 위험 또는 사용자 제품 결정이 필요하면 그 지점에서 멈추고 구체적으로 보고한다. 소스 push는 제품 공개 승인이 아니다.
 - 다른 PC의 자동 공유/원격 제어를 가정하지 않는다. 정확한 출발 상태·GitHub 자산·실행할 시험·판정 기준·자료 보호·로그 위치를 인계하고 실제 수행/미검증을 구분한다. 승인 범위 내 실패 수정/재검증은 결과를 받은 뒤 계속한다.
 - 의미 있는 목표 단위로 목적·결정 이유·변경·검증/미검증·실제 배포 버전·미해결·다음 작업과 진입 문서를 기존 기록에 남긴다. 원본 dirty 작업/다른 프로젝트 변경을 섞거나 main을 강제로 덮어쓰지 않는다.
+
+## Southpaw Games Development Hub (2026-11-24)
+
+- 작업 전 `git status`, 현재 브랜치, HEAD, remote를 확인한다. 기존 프로젝트 규칙과 함께 [중앙 AI 시작 안내](https://github.com/rodetoast/southpaw-development-hub/blob/main/docs/AI_START_HERE.md), 관련 공통 개발·배포 지침, [이 프로젝트의 개발 현황](https://github.com/rodetoast/toasty/blob/codex/migration-checkpoint-20261117/docs/PROJECT_STATUS.md)을 연다.
+- 허브는 비공개다. 기존 GitHub 인증으로 브라우저나 로컬 허브 clone을 열거나 `gh api -H "Accept: application/vnd.github.raw+json" repos/rodetoast/southpaw-development-hub/contents/docs/AI_START_HERE.md`로 읽는다. URL만으로 원격 문서가 자동 로드되지 않는다. 문서에 접근하지 못하면 확인 범위를 기록하고 미확인 규칙을 추측하지 않는다.
+- 기록과 소스·Git·서명 배포 근거가 다르면 확인된 사실로 해당 기록을 바로잡는다. 지시 간 충돌이 있으면 작업 승인 범위와 우선순위를 확인해 영향을 알린다.
+- 주요 기능·버전·호환성·설계·배포 변경 완료 시 개발 브랜치의 `docs/PROJECT_STATUS.md`에 커밋, 검증·미검증, 배포 상태와 후속 작업을 기록한다. 같은 작업에서 [허브 요약](https://github.com/rodetoast/southpaw-development-hub/blob/main/projects/tag-master.md)과 중앙 목록의 관련 부분을 갱신한다. 중앙에 쓰기 권한이 없으면 패치와 미동기화 범위를 남긴다. 개발 문서 push와 운영 공개 승인을 구분한다.
